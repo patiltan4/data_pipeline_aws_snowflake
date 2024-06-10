@@ -1,0 +1,156 @@
+--Creating a test database
+CREATE OR REPLACE DATABASE SPOTIFY_DB;
+--Create a Schema
+CREATE OR REPLACE SCHEMA SPOTIFY_DB.EXT_DATA;
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+
+--Create Storage Integration
+CREATE OR REPLACE STORAGE INTEGRATION S3_INIT
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN = 'arn_from_data_role'
+STORAGE_ALLOWED_LOCATIONS = ('s3://your_bucket_name')
+COMMENT = 'Creating connection from s3 to snowflake'
+
+--getting STORAGE_AWS_IAM_USER_ARN , STORAGE_AWS_EXTERNAL_ID and paste in s3 role trust policy
+DESC INTEGRATION S3_INIT;
+
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+
+-- Create table for albums
+CREATE OR REPLACE TABLE SPOTIFY_DB.EXT_DATA.albums (
+    album_id VARCHAR(50),
+    name VARCHAR(255),
+    release_date DATE,
+    total_tracks INTEGER,
+    url VARCHAR(255)
+);
+
+-- Create table for artists
+CREATE OR REPLACE TABLE SPOTIFY_DB.EXT_DATA.artists (
+    artist_id VARCHAR(50),
+    artist_name VARCHAR(255),
+    external_url VARCHAR(255)
+);
+
+-- Create table for songs
+CREATE OR REPLACE TABLE SPOTIFY_DB.EXT_DATA.songs (
+    song_id VARCHAR(50),
+    song_name VARCHAR(255),
+    song_duration INTEGER,
+    url VARCHAR(255),
+    popularity INTEGER,
+    song_added TIMESTAMP,
+    album_id VARCHAR(50),
+    artist_id VARCHAR(50)
+    --FOREIGN KEY (album_id) REFERENCES albums(album_id),
+    --FOREIGN KEY (artist_id) REFERENCES artists(artist_id)
+);
+
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+--Creating External Stage
+  
+
+--Create file format
+CREATE OR REPLACE FILE FORMAT SPOTIFY_DB.EXT_DATA.CSV_FILE_FORMAT
+TYPE=CSV,
+FIELD_DELIMITER=","
+SKIP_HEADER=1
+NULL_IF = ('NULL','null')
+EMPTY_FIELD_AS_NULL = TRUE;
+
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+
+--Create stage to get data
+CREATE OR REPLACE STAGE SPOTIFY_DB.EXT_DATA.CSV_FOLDER
+URL='s3://spotify-etl-pipe'
+STORAGE_INTEGRATION = S3_INIT
+FILE_FORMAT = SPOTIFY_DB.EXT_DATA.CSV_FILE_FORMAT
+
+--LIST FOLDERS IN S3 BUCKET
+LIST @SPOTIFY_DB.EXT_DATA.CSV_FOLDER;
+
+LIST @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/album_data;
+LIST @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/artist_data;
+LIST @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/song_data;
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+
+COPY INTO SPOTIFY_DB.EXT_DATA.ALBUMS
+    FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/album_data
+    FILE_FORMAT=(FORMAT_NAME= SPOTIFY_DB.EXT_DATA.CSV_FILE_FORMAT)
+    ON_ERROR=CONTINUE
+    PATTERN='.*album.*.csv';
+
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.ALBUMS;  
+
+COPY INTO SPOTIFY_DB.EXT_DATA.ARTISTS
+    FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/artist_data
+    FILE_FORMAT=(FORMAT_NAME= SPOTIFY_DB.EXT_DATA.CSV_FILE_FORMAT)
+    ON_ERROR=CONTINUE
+    PATTERN='.*artist.*.csv';
+
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.ARTISTS;
+
+SELECT * FROM SPOTIFY_DB.EXT_DATA.ARTISTS LIMIT 2;
+
+COPY INTO SPOTIFY_DB.EXT_DATA.SONGS
+    FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/song_data
+    FILE_FORMAT=(FORMAT_NAME= SPOTIFY_DB.EXT_DATA.CSV_FILE_FORMAT)
+    ON_ERROR=CONTINUE
+    PATTERN='.*songs.*.csv';
+
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.SONGS;
+
+SELECT * FROM SPOTIFY_DB.EXT_DATA.SONGS LIMIT 2;
+
+-----------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------
+CREATE OR REPLACE PIPE SPOTIFY_DB.EXT_DATA.ALBUM_PIPE
+AUTO_INGEST = TRUE
+AS
+COPY INTO SPOTIFY_DB.EXT_DATA.ALBUMS
+FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/album_data;
+
+DESC PIPE SPOTIFY_DB.EXT_DATA.ALBUM_PIPE;
+--CREATE notification channel  -->s3 create notification and put above query notification_channel in SQS queue
+
+SELECT SYSTEM$PIPE_STATUS('SPOTIFY_DB.EXT_DATA.ALBUM_PIPE');
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.ALBUMS; 
+
+ALTER PIPE SPOTIFY_DB.EXT_DATA.ALBUM_PIPE SET PIPE_EXECUTION_PAUSED = true;
+
+CREATE OR REPLACE PIPE SPOTIFY_DB.EXT_DATA.ARTIST_PIPE
+AUTO_INGEST = TRUE
+AS
+COPY INTO SPOTIFY_DB.EXT_DATA.ARTISTS
+FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/artist_data;
+
+DESC PIPE SPOTIFY_DB.EXT_DATA.ARTIST_PIPE;
+--CREATE notification channel  -->s3 create notification and put above query notification_channel in SQS queue
+
+SELECT SYSTEM$PIPE_STATUS('SPOTIFY_DB.EXT_DATA.ARTIST_PIPE');
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.ARTISTS; 
+
+ALTER PIPE SPOTIFY_DB.EXT_DATA.ARTIST_PIPE SET PIPE_EXECUTION_PAUSED = true;
+
+
+CREATE OR REPLACE PIPE SPOTIFY_DB.EXT_DATA.SONGS_PIPE
+AUTO_INGEST = TRUE
+AS
+COPY INTO SPOTIFY_DB.EXT_DATA.SONGS
+FROM @SPOTIFY_DB.EXT_DATA.CSV_FOLDER/transformed_data/song_data;
+
+DESC PIPE SPOTIFY_DB.EXT_DATA.SONGS_PIPE;
+--CREATE notification channel  -->s3 create notification and put above query notification_channel in SQS queue
+
+SELECT SYSTEM$PIPE_STATUS('SPOTIFY_DB.EXT_DATA.SONGS_PIPE');
+SELECT COUNT(*) FROM SPOTIFY_DB.EXT_DATA.SONGS; 
+
+ALTER PIPE SPOTIFY_DB.EXT_DATA.SONGS_PIPE SET PIPE_EXECUTION_PAUSED = true;
+
